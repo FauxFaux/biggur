@@ -162,7 +162,7 @@ impl Cache {
             .query_row(&[url], |row| row.get::<_, Option<Instant>>(0))?
         {
             info!("{:?}: exists in cache, from {:?}", url, cached_at);
-            if cached_at.signed_duration_since(now).num_seconds() < cache_secs {
+            if now.signed_duration_since(cached_at).num_seconds() < cache_secs {
                 return Ok(self
                     .db
                     .prepare_cached("select returned from raw where occurred=? and url=?")?
