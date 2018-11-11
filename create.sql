@@ -3,3 +3,5 @@ create table raw (
   url varchar not null,
   returned varchar not null
 );
+
+create unique index raw_fetch on raw (url, occurred);
