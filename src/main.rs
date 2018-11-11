@@ -15,15 +15,20 @@ use serde_json::Value;
 
 type Instant = chrono::DateTime<chrono::Utc>;
 
+struct Cache {
+    db: rusqlite::Connection,
+    client: reqwest::Client,
+}
+
 fn main() -> Result<(), Error> {
     pretty_env_logger::init();
 
-    let db = rusqlite::Connection::open("biggur.db")?;
-    let client = reqwest::ClientBuilder::new()
-        .timeout(Duration::from_secs(5))
-        .build()?;
-
-    let mut write_raw = db.prepare("insert into raw (occurred, url, returned) values (?,?,?)")?;
+    let cache = Cache {
+        db: rusqlite::Connection::open("biggur.db")?,
+        client: reqwest::ClientBuilder::new()
+            .timeout(Duration::from_secs(5))
+            .build()?,
+    };
 
     for gallery in &["viral", "rising"] {
         for page in 0..=5 {
@@ -32,7 +37,8 @@ fn main() -> Result<(), Error> {
                 gallery, page
             );
 
-            let data = fetch(&client, &mut write_raw, &url)
+            let data = cache
+                .fetch(&url)
                 .with_context(|_| format_err!("fetching {:?}", url))?;
         }
     }
@@ -40,17 +46,44 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-fn fetch(client: &Client, write_raw: &mut Statement, url: &str) -> Result<Value, Error> {
-    info!("fetch: {:?}", url);
-    let body: Value = client.get(url).send()?.json()?;
-    trace!("returned: {:?}", body);
+impl Cache {
+    fn fetch(&self, url: &str) -> Result<Value, Error> {
+        let now = now();
 
-    let body = unpack_response(&body)
-        .with_context(|_| format_err!("unpacking {:?}, which returned {:?}", url, body))?;
+        {
+            let mut max = self
+                .db
+                .prepare_cached("select max(occurred) from raw where url=?")?;
+            let mut rows = max.query(&[url])?;
 
-    write_raw.insert(&[&now() as &ToSql, &url, body])?;
+            let row = rows.next().expect("max always returns")?;
+            if let Some(cached_at) = row.get::<_, Option<Instant>>(0) {
+                trace!("{:?}: exists in cache...", url);
+                if cached_at.signed_duration_since(now).num_seconds() < 60 * 60 {
+                    let mut stat = self
+                        .db
+                        .prepare_cached("select returned from raw where occurred=? and url=?")?;
+                    return Ok(stat.query_row(&[&cached_at as &ToSql, &url], |row| row.get(0))?);
+                } else {
+                    trace!("{:?}: ...but was too old", url)
+                }
+            }
+        }
 
-    Ok(body.to_owned())
+        info!("{:?}: fetching", url);
+        let body: Value = self.client.get(url).send()?.json()?;
+        trace!("returned: {:?}", body);
+
+        let body = unpack_response(&body)
+            .with_context(|_| format_err!("unpacking {:?}, which returned {:?}", url, body))?;
+
+        let mut write_raw = self
+            .db
+            .prepare_cached("insert into raw (occurred, url, returned) values (?,?,?)")?;
+        write_raw.insert(&[&now as &ToSql, &url, body])?;
+
+        Ok(body.to_owned())
+    }
 }
 
 fn unpack_response(body: &Value) -> Result<&Value, Error> {
