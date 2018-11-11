@@ -50,23 +50,19 @@ impl Cache {
     fn fetch(&self, url: &str) -> Result<Value, Error> {
         let now = now();
 
+        if let Some(cached_at) = self
+            .db
+            .prepare_cached("select max(occurred) from raw where url=?")?
+            .query_row(&[url], |row| row.get::<_, Option<Instant>>(0))?
         {
-            let mut max = self
-                .db
-                .prepare_cached("select max(occurred) from raw where url=?")?;
-            let mut rows = max.query(&[url])?;
-
-            let row = rows.next().expect("max always returns")?;
-            if let Some(cached_at) = row.get::<_, Option<Instant>>(0) {
-                trace!("{:?}: exists in cache...", url);
-                if cached_at.signed_duration_since(now).num_seconds() < 60 * 60 {
-                    let mut stat = self
-                        .db
-                        .prepare_cached("select returned from raw where occurred=? and url=?")?;
-                    return Ok(stat.query_row(&[&cached_at as &ToSql, &url], |row| row.get(0))?);
-                } else {
-                    trace!("{:?}: ...but was too old", url)
-                }
+            trace!("{:?}: exists in cache, from {:?}", url, cached_at);
+            if cached_at.signed_duration_since(now).num_seconds() < 60 * 60 {
+                return Ok(self
+                    .db
+                    .prepare_cached("select returned from raw where occurred=? and url=?")?
+                    .query_row(&[&cached_at as &ToSql, &url], |row| row.get(0))?);
+            } else {
+                trace!("{:?}: ...but was too old", url)
             }
         }
 
