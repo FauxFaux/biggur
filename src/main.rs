@@ -8,6 +8,7 @@ extern crate serde_json;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
+use std::thread;
 use std::time::Duration;
 
 use cast::u64;
@@ -32,7 +33,7 @@ fn main() -> Result<(), Error> {
     let cache = Cache {
         db: rusqlite::Connection::open("biggur.db")?,
         client: reqwest::ClientBuilder::new()
-            .timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(15))
             .build()?,
         client_id: env::var("IMGUR_CLIENT_ID")
             .with_context(|_| err_msg("loading IMGUR_CLIENT_ID from environment"))?,
@@ -92,7 +93,7 @@ fn main() -> Result<(), Error> {
                         cache
                             .fetch(
                                 &format!("https://api.imgur.com/3/album/{}", id),
-                                24 * 60 * 60,
+                                2 * 24 * 60 * 60,
                             )?
                             .as_object()
                             .ok_or(err_msg("album must be an object"))?
@@ -132,7 +133,8 @@ fn map_img(img: Value) -> Result<Value, Error> {
                     .as_str()
                     .ok_or(err_msg("link must be a string"))?,
             )?,
-            img.get("size").and_then(|size| size.as_u64())
+            img.get("size")
+                .and_then(|size| size.as_u64())
                 .ok_or(err_msg("size is always present"))?,
         )
     };
@@ -172,24 +174,46 @@ impl Cache {
             }
         }
 
+        let body = self.try_fetch_body(url)?;
+
+        let mut write_raw = self
+            .db
+            .prepare_cached("insert into raw (occurred, url, returned) values (?,?,?)")?;
+        write_raw.insert(&[&now as &ToSql, &url, &body])?;
+
+        Ok(body)
+    }
+
+    fn try_fetch_body(&self, url: &str) -> Result<Value, Error> {
+        for fetch in 0..4 {
+            match self.actually_fetch_body(url) {
+                Ok(val) => return Ok(val),
+                Err(e) => {
+                    warn!("fetch {} failed, will re-try. {:?}", fetch, e);
+                }
+            }
+
+            thread::sleep(Duration::from_secs(15));
+        }
+
+        self.actually_fetch_body(url)
+    }
+
+    fn actually_fetch_body(&self, url: &str) -> Result<Value, Error> {
         info!("{:?}: fetching", url);
+
         let body: Value = self
             .client
             .get(url)
             .header(AUTHORIZATION, format!("Client-ID {}", self.client_id))
             .send()?
             .json()?;
+
         trace!("returned: {:?}", body);
 
-        let body = unpack_response(&body)
-            .with_context(|_| format_err!("unpacking {:?}, which returned {:?}", url, body))?;
-
-        let mut write_raw = self
-            .db
-            .prepare_cached("insert into raw (occurred, url, returned) values (?,?,?)")?;
-        write_raw.insert(&[&now as &ToSql, &url, body])?;
-
-        Ok(body.to_owned())
+        Ok(unpack_response(&body)
+            .with_context(|_| format_err!("unpacking {:?}, which returned {:?}", url, body))?
+            .to_owned())
     }
 }
 
