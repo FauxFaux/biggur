@@ -11,6 +11,7 @@ mod whole;
 use std::collections::HashSet;
 use std::env;
 use std::time::Duration;
+use std::thread;
 
 use cast::u64;
 use failure::err_msg;
@@ -18,21 +19,46 @@ use failure::Error;
 use failure::ResultExt;
 use serde_json::Value;
 
+use self::cache::Cache;
+
 type Instant = chrono::DateTime<chrono::Utc>;
 type JsonObj = serde_json::Map<String, Value>;
 
 fn main() -> Result<(), Error> {
     pretty_env_logger::init();
+    let client_id = env::var("IMGUR_CLIENT_ID")
+        .with_context(|_| err_msg("loading IMGUR_CLIENT_ID from environment"))?;
 
+    setup_watch_hot(client_id)?;
+
+    rouille::start_server("0.0.0.0:5812", |req| {
+        unimplemented!()
+    });
+}
+
+fn setup_watch_hot<S: ToString>(client_id: S) -> Result<(), Error> {
     let cache = cache::Cache {
-        db: rusqlite::Connection::open("biggur.db")?,
-        client: reqwest::ClientBuilder::new()
-            .timeout(Duration::from_secs(15))
-            .build()?,
-        client_id: env::var("IMGUR_CLIENT_ID")
-            .with_context(|_| err_msg("loading IMGUR_CLIENT_ID from environment"))?,
+        db: db_connection()?,
+        client: http_client_with_timeout(15)?,
+        client_id: client_id.to_string(),
     };
 
+    load_and_write_whole(&cache)?;
+
+    thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_secs(30 * 60));
+
+            if let Err(e) = load_and_write_whole(&cache) {
+                error!("writing whole failed: {:?}", e);
+            }
+        }
+    });
+
+    Ok(())
+}
+
+fn load_and_write_whole(cache: &Cache,) -> Result<(), Error> {
     for gallery in &["viral", "rising"] {
         let expanded = load_expanded(&cache, &gallery)?;
 
@@ -40,6 +66,16 @@ fn main() -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+fn db_connection() -> Result<rusqlite::Connection, Error> {
+    Ok(rusqlite::Connection::open("biggur.db")?)
+}
+
+fn http_client_with_timeout(secs: u64) -> Result<reqwest::Client, Error> {
+    Ok(reqwest::ClientBuilder::new()
+        .timeout(Duration::from_secs(secs))
+        .build()?)
 }
 
 fn load_expanded(cache: &cache::Cache, gallery: &str) -> Result<Vec<(JsonObj, Vec<Value>)>, Error> {
