@@ -20,6 +20,7 @@ use rusqlite::types::ToSql;
 use serde_json::Value;
 
 type Instant = chrono::DateTime<chrono::Utc>;
+type JsonObj = serde_json::Map<String, Value>;
 
 struct Cache {
     db: rusqlite::Connection,
@@ -40,72 +41,17 @@ fn main() -> Result<(), Error> {
     };
 
     for gallery in &["viral", "rising"] {
-        let mut items = Vec::with_capacity(300);
-
-        for page in 0..=5 {
-            let url = format!(
-                "https://api.imgur.com/3/gallery/hot/{}/{}.json",
-                gallery, page
-            );
-
-            items.extend(
-                cache
-                    .fetch(&url, 60 * 60)
-                    .with_context(|_| format_err!("fetching {:?}", url))?
-                    .as_array()
-                    .ok_or(err_msg("data should be array"))?
-                    .into_iter()
-                    .map(|v| v.to_owned()),
-            );
-        }
-
-        let mut already_seen = HashSet::with_capacity(items.len());
-        let mut whole = Vec::with_capacity(items.len());
-
-        for item in items {
-            let item = item.as_object().ok_or(err_msg("non-object item"))?;
-
-            let id = item
+        let mut whole = Vec::with_capacity(300);
+        for (album, images) in load_expanded(&cache, &gallery)? {
+            let id = album
                 .get("id")
                 .and_then(|id| id.as_str())
                 .ok_or(err_msg("id is mandatory"))?;
 
-            if !already_seen.insert(id.to_string()) {
-                continue;
-            }
-
-            let title = item
+            let title = album
                 .get("title")
                 .and_then(|title| title.as_str())
                 .ok_or(err_msg("title is mandatory"))?;
-
-            let images =
-                if let Some(images) = item.get("images").and_then(|images| images.as_array()) {
-                    let images_count = item
-                        .get("images_count")
-                        .and_then(|count| count.as_u64())
-                        .ok_or(err_msg("images but no images_count"))?;
-
-                    if images_count <= u64(images.len()) {
-                        // we already have them all!
-                        images.to_owned()
-                    } else {
-                        cache
-                            .fetch(
-                                &format!("https://api.imgur.com/3/album/{}", id),
-                                2 * 24 * 60 * 60,
-                            )?
-                            .as_object()
-                            .ok_or(err_msg("album must be an object"))?
-                            .get("images")
-                            .ok_or(err_msg("album must contain images"))?
-                            .as_array()
-                            .ok_or(err_msg("album images must be an array"))?
-                            .to_owned()
-                    }
-                } else {
-                    vec![Value::Object(item.to_owned())]
-                };
 
             let images: Result<Vec<_>, Error> = images.into_iter().map(map_img).collect();
 
@@ -115,11 +61,79 @@ fn main() -> Result<(), Error> {
                 "images": images?,
             }));
         }
-
         serde_json::to_writer(fs::File::create(format!("{}.json", gallery))?, &whole)?;
     }
 
     Ok(())
+}
+
+fn load_expanded(cache: &Cache, gallery: &str) -> Result<Vec<(JsonObj, Vec<Value>)>, Error> {
+    let mut albums = Vec::with_capacity(300);
+    for page in 0..=5 {
+        let url = format!(
+            "https://api.imgur.com/3/gallery/hot/{}/{}.json",
+            gallery, page
+        );
+
+        albums.extend(
+            cache
+                .fetch(&url, 60 * 60)
+                .with_context(|_| format_err!("fetching {:?}", url))?
+                .as_array()
+                .ok_or(err_msg("data should be array"))?
+                .into_iter()
+                .map(|v| v.to_owned()),
+        );
+    }
+
+    let mut already_seen = HashSet::with_capacity(albums.len());
+    let mut expanded = Vec::with_capacity(albums.len());
+
+    for album in albums {
+        let album = album.as_object().ok_or(err_msg("non-object item"))?;
+
+        let id = album
+            .get("id")
+            .and_then(|id| id.as_str())
+            .ok_or(err_msg("id is mandatory"))?;
+
+        if !already_seen.insert(id.to_string()) {
+            continue;
+        }
+
+        expanded.push((album.to_owned(), expand_images(cache, &album, &id)?));
+    }
+
+    Ok(expanded)
+}
+
+fn expand_images(cache: &Cache, album: &JsonObj, id: &str) -> Result<Vec<Value>, Error> {
+    if let Some(images) = album.get("images").and_then(|images| images.as_array()) {
+        let images_count = album
+            .get("images_count")
+            .and_then(|count| count.as_u64())
+            .ok_or(err_msg("images but no images_count"))?;
+
+        if images_count <= u64(images.len()) {
+            // we already have them all!
+            Ok(images.to_owned())
+        } else {
+            Ok(cache
+                .fetch(
+                    &format!("https://api.imgur.com/3/album/{}", id),
+                    2 * 24 * 60 * 60,
+                )?
+                .as_object()
+                .ok_or(err_msg("album must be an object"))?
+                .get("images")
+                .ok_or(err_msg("album must contain images"))?
+                .as_array()
+                .ok_or(err_msg("album images must be an array"))?
+                .to_owned())
+        }
+    } else {
+        Ok(vec![Value::Object(album.to_owned())])
+    }
 }
 
 fn map_img(img: Value) -> Result<Value, Error> {
