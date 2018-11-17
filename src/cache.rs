@@ -4,6 +4,8 @@ use std::time::Duration;
 use failure::err_msg;
 use failure::Error;
 use failure::ResultExt;
+use r2d2::ManageConnection;
+use r2d2_sqlite::SqliteConnectionManager;
 use reqwest::header::AUTHORIZATION;
 use rusqlite::types::ToSql;
 use serde_json::Value;
@@ -11,7 +13,7 @@ use serde_json::Value;
 use super::Instant;
 
 pub struct Cache {
-    pub db: rusqlite::Connection,
+    pub db: SqliteConnectionManager,
     pub client: reqwest::Client,
     pub client_id: String,
 }
@@ -19,16 +21,15 @@ pub struct Cache {
 impl Cache {
     pub fn fetch(&self, url: &str, cache_secs: i64) -> Result<Value, Error> {
         let now = now();
+        let db = self.db.connect()?;
 
-        if let Some(cached_at) = self
-            .db
+        if let Some(cached_at) = db
             .prepare_cached("select max(occurred) from raw where url=?")?
             .query_row(&[url], |row| row.get::<_, Option<Instant>>(0))?
         {
             info!("{:?}: exists in cache, from {:?}", url, cached_at);
             if now.signed_duration_since(cached_at).num_seconds() < cache_secs {
-                return Ok(self
-                    .db
+                return Ok(db
                     .prepare_cached("select returned from raw where occurred=? and url=?")?
                     .query_row(&[&cached_at as &ToSql, &url], |row| row.get(0))?);
             } else {
@@ -38,9 +39,8 @@ impl Cache {
 
         let body = self.try_fetch_body(url)?;
 
-        let mut write_raw = self
-            .db
-            .prepare_cached("insert into raw (occurred, url, returned) values (?,?,?)")?;
+        let mut write_raw =
+            db.prepare_cached("insert into raw (occurred, url, returned) values (?,?,?)")?;
         write_raw.insert(&[&now as &ToSql, &url, &body])?;
 
         Ok(body)

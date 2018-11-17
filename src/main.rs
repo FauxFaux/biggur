@@ -10,13 +10,14 @@ mod whole;
 
 use std::collections::HashSet;
 use std::env;
-use std::time::Duration;
 use std::thread;
+use std::time::Duration;
 
 use cast::u64;
 use failure::err_msg;
 use failure::Error;
 use failure::ResultExt;
+use r2d2_sqlite::SqliteConnectionManager;
 use serde_json::Value;
 
 use self::cache::Cache;
@@ -29,36 +30,34 @@ fn main() -> Result<(), Error> {
     let client_id = env::var("IMGUR_CLIENT_ID")
         .with_context(|_| err_msg("loading IMGUR_CLIENT_ID from environment"))?;
 
-    setup_watch_hot(client_id)?;
+    let r2 = r2d2_sqlite::SqliteConnectionManager::file("biggur.db");
 
-    rouille::start_server("0.0.0.0:5812", |req| {
-        unimplemented!()
-    });
+    setup_watch_hot(r2, client_id)?;
+
+    rouille::start_server("0.0.0.0:5812", |req| unimplemented!());
 }
 
-fn setup_watch_hot<S: ToString>(client_id: S) -> Result<(), Error> {
+fn setup_watch_hot(db: SqliteConnectionManager, client_id: String) -> Result<(), Error> {
     let cache = cache::Cache {
-        db: db_connection()?,
         client: http_client_with_timeout(15)?,
-        client_id: client_id.to_string(),
+        client_id,
+        db,
     };
 
     load_and_write_whole(&cache)?;
 
-    thread::spawn(move || {
-        loop {
-            thread::sleep(Duration::from_secs(30 * 60));
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(30 * 60));
 
-            if let Err(e) = load_and_write_whole(&cache) {
-                error!("writing whole failed: {:?}", e);
-            }
+        if let Err(e) = load_and_write_whole(&cache) {
+            error!("writing whole failed: {:?}", e);
         }
     });
 
     Ok(())
 }
 
-fn load_and_write_whole(cache: &Cache,) -> Result<(), Error> {
+fn load_and_write_whole(cache: &Cache) -> Result<(), Error> {
     for gallery in &["viral", "rising"] {
         let expanded = load_expanded(&cache, &gallery)?;
 
@@ -66,10 +65,6 @@ fn load_and_write_whole(cache: &Cache,) -> Result<(), Error> {
     }
 
     Ok(())
-}
-
-fn db_connection() -> Result<rusqlite::Connection, Error> {
-    Ok(rusqlite::Connection::open("biggur.db")?)
 }
 
 fn http_client_with_timeout(secs: u64) -> Result<reqwest::Client, Error> {
