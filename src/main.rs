@@ -26,18 +26,19 @@ fn main() -> Result<(), Error> {
     let client_id = env::var("IMGUR_CLIENT_ID")
         .with_context(|_| err_msg("loading IMGUR_CLIENT_ID from environment"))?;
 
-    let r2 = r2d2_sqlite::SqliteConnectionManager::file("biggur.db");
+    let app = r2d2_sqlite::SqliteConnectionManager::file("biggur.db");
+    let raw = r2d2_sqlite::SqliteConnectionManager::file("raw.db");
 
-    setup_watch_hot(r2, client_id)?;
+    setup_watch_hot(raw, client_id)?;
 
     rouille::start_server("0.0.0.0:5812", |req| unimplemented!());
 }
 
-fn setup_watch_hot(db: SqliteConnectionManager, client_id: String) -> Result<(), Error> {
+fn setup_watch_hot(raw: SqliteConnectionManager, client_id: String) -> Result<(), Error> {
     let cache = cache::Cache {
         client: http_client_with_timeout(15)?,
         client_id,
-        db,
+        raw,
     };
 
     whole::load_and_write_whole(&cache)?;

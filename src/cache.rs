@@ -13,7 +13,7 @@ use serde_json::Value;
 use super::Instant;
 
 pub struct Cache {
-    pub db: SqliteConnectionManager,
+    pub raw: SqliteConnectionManager,
     pub client: reqwest::Client,
     pub client_id: String,
 }
@@ -21,7 +21,7 @@ pub struct Cache {
 impl Cache {
     pub fn fetch(&self, url: &str, cache_secs: i64) -> Result<Value, Error> {
         let now = now();
-        let db = self.db.connect()?;
+        let db = self.raw.connect()?;
 
         if let Some(cached_at) = db
             .prepare_cached("select max(occurred) from raw where url=?")?
