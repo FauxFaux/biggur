@@ -1,5 +1,5 @@
 #[macro_use]
-extern crate failure;
+extern crate anyhow;
 #[macro_use]
 extern crate log;
 #[macro_use]
@@ -12,9 +12,7 @@ use std::fs;
 use std::thread;
 use std::time::Duration;
 
-use failure::err_msg;
-use failure::Error;
-use failure::ResultExt;
+use anyhow::{Context, Result};
 use reqwest::header::AUTHORIZATION;
 use rusqlite::types::ToSql;
 use serde_json::Value;
@@ -27,7 +25,7 @@ struct Cache {
     client_id: String,
 }
 
-fn main() -> Result<(), Error> {
+fn main() -> Result<()> {
     pretty_env_logger::init();
 
     let cache = Cache {
@@ -36,7 +34,7 @@ fn main() -> Result<(), Error> {
             .timeout(Duration::from_secs(15))
             .build()?,
         client_id: env::var("IMGUR_CLIENT_ID")
-            .with_context(|_| err_msg("loading IMGUR_CLIENT_ID from environment"))?,
+            .context("loading IMGUR_CLIENT_ID from environment")?,
     };
 
     for gallery in &["viral", "rising"] {
@@ -51,9 +49,9 @@ fn main() -> Result<(), Error> {
             items.extend(
                 cache
                     .fetch(&url, 60 * 60)
-                    .with_context(|_| format_err!("fetching {:?}", url))?
+                    .with_context(|| anyhow!("fetching {:?}", url))?
                     .as_array()
-                    .ok_or(err_msg("data should be array"))?
+                    .ok_or(anyhow!("data should be array"))?
                     .into_iter()
                     .map(|v| v.to_owned()),
             );
@@ -63,12 +61,12 @@ fn main() -> Result<(), Error> {
         let mut whole = Vec::with_capacity(items.len());
 
         for item in items {
-            let item = item.as_object().ok_or(err_msg("non-object item"))?;
+            let item = item.as_object().ok_or(anyhow!("non-object item"))?;
 
             let id = item
                 .get("id")
                 .and_then(|id| id.as_str())
-                .ok_or(err_msg("id is mandatory"))?;
+                .ok_or(anyhow!("id is mandatory"))?;
 
             if !already_seen.insert(id.to_string()) {
                 continue;
@@ -77,14 +75,14 @@ fn main() -> Result<(), Error> {
             let title = item
                 .get("title")
                 .and_then(|title| title.as_str())
-                .ok_or(err_msg("title is mandatory"))?;
+                .ok_or(anyhow!("title is mandatory"))?;
 
             let images =
                 if let Some(images) = item.get("images").and_then(|images| images.as_array()) {
                     let images_count = item
                         .get("images_count")
                         .and_then(|count| count.as_u64())
-                        .ok_or(err_msg("images but no images_count"))?;
+                        .ok_or(anyhow!("images but no images_count"))?;
 
                     if images_count <= u64::try_from(images.len()).expect("usize u64") {
                         // we already have them all!
@@ -96,18 +94,18 @@ fn main() -> Result<(), Error> {
                                 2 * 24 * 60 * 60,
                             )?
                             .as_object()
-                            .ok_or(err_msg("album must be an object"))?
+                            .ok_or(anyhow!("album must be an object"))?
                             .get("images")
-                            .ok_or(err_msg("album must contain images"))?
+                            .ok_or(anyhow!("album must contain images"))?
                             .as_array()
-                            .ok_or(err_msg("album images must be an array"))?
+                            .ok_or(anyhow!("album images must be an array"))?
                             .to_owned()
                     }
                 } else {
                     vec![Value::Object(item.to_owned())]
                 };
 
-            let images: Result<Vec<_>, Error> = images.into_iter().map(map_img).collect();
+            let images: Result<Vec<_>> = images.into_iter().map(map_img).collect();
 
             whole.push(json!({
                 "id": id,
@@ -122,20 +120,20 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-fn map_img(img: Value) -> Result<Value, Error> {
+fn map_img(img: Value) -> Result<Value> {
     let (format, size) = if let Some(mp4_size) = img.get("mp4_size").and_then(|mp4| mp4.as_u64()) {
         ("mp4", mp4_size)
     } else {
         (
             extension(
                 img.get("link")
-                    .ok_or(err_msg("image must have link"))?
+                    .ok_or(anyhow!("image must have link"))?
                     .as_str()
-                    .ok_or(err_msg("link must be a string"))?,
+                    .ok_or(anyhow!("link must be a string"))?,
             )?,
             img.get("size")
                 .and_then(|size| size.as_u64())
-                .ok_or(err_msg("size is always present"))?,
+                .ok_or(anyhow!("size is always present"))?,
         )
     };
 
@@ -150,12 +148,12 @@ fn map_img(img: Value) -> Result<Value, Error> {
     }))
 }
 
-fn extension(url: &str) -> Result<&str, Error> {
-    Ok(&url[url.rfind('.').ok_or(err_msg("no dot"))? + 1..])
+fn extension(url: &str) -> Result<&str> {
+    Ok(&url[url.rfind('.').ok_or(anyhow!("no dot"))? + 1..])
 }
 
 impl Cache {
-    fn fetch(&self, url: &str, cache_secs: i64) -> Result<Value, Error> {
+    fn fetch(&self, url: &str, cache_secs: i64) -> Result<Value> {
         let now = now();
 
         if let Some(cached_at) = self
@@ -184,7 +182,7 @@ impl Cache {
         Ok(body)
     }
 
-    fn try_fetch_body(&self, url: &str) -> Result<Value, Error> {
+    fn try_fetch_body(&self, url: &str) -> Result<Value> {
         for fetch in 0..4 {
             match self.actually_fetch_body(url) {
                 Ok(val) => return Ok(val),
@@ -199,7 +197,7 @@ impl Cache {
         self.actually_fetch_body(url)
     }
 
-    fn actually_fetch_body(&self, url: &str) -> Result<Value, Error> {
+    fn actually_fetch_body(&self, url: &str) -> Result<Value> {
         info!("{:?}: fetching", url);
 
         let body: Value = self
@@ -212,20 +210,20 @@ impl Cache {
         trace!("returned: {:?}", body);
 
         Ok(unpack_response(&body)
-            .with_context(|_| format_err!("unpacking {:?}, which returned {:?}", url, body))?
+            .with_context(|| anyhow!("unpacking {:?}, which returned {:?}", url, body))?
             .to_owned())
     }
 }
 
-fn unpack_response(body: &Value) -> Result<&Value, Error> {
-    let body = body.as_object().ok_or(err_msg("root wasn't object"))?;
+fn unpack_response(body: &Value) -> Result<&Value> {
+    let body = body.as_object().ok_or(anyhow!("root wasn't object"))?;
     ensure!(
         body.get("success")
             .and_then(|success| success.as_bool())
             .unwrap_or(false),
         "request wasn't success"
     );
-    Ok(body.get("data").ok_or(err_msg("data absent"))?)
+    Ok(body.get("data").ok_or(anyhow!("data absent"))?)
 }
 
 fn now() -> Instant {
