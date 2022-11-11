@@ -14,4 +14,4 @@ serde_json = "1"
 
 [dependencies.rusqlite]
 features = ["bundled", "chrono", "serde_json"]
-version = "0.21"
+version = "0.28"
