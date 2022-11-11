@@ -168,7 +168,7 @@ impl Cache {
                 return Ok(self
                     .db
                     .prepare_cached("select returned from raw where occurred=? and url=?")?
-                    .query_row(&[&cached_at as &ToSql, &url], |row| row.get(0))?);
+                    .query_row(&[&cached_at as &dyn ToSql, &url], |row| row.get(0))?);
             } else {
                 trace!("{:?}: ...but was too old", url)
             }
@@ -179,7 +179,7 @@ impl Cache {
         let mut write_raw = self
             .db
             .prepare_cached("insert into raw (occurred, url, returned) values (?,?,?)")?;
-        write_raw.insert(&[&now as &ToSql, &url, &body])?;
+        write_raw.insert(&[&now as &dyn ToSql, &url, &body])?;
 
         Ok(body)
     }
