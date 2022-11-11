@@ -6,12 +6,12 @@ extern crate log;
 extern crate serde_json;
 
 use std::collections::HashSet;
+use std::convert::TryFrom;
 use std::env;
 use std::fs;
 use std::thread;
 use std::time::Duration;
 
-use cast::u64;
 use failure::err_msg;
 use failure::Error;
 use failure::ResultExt;
@@ -86,7 +86,7 @@ fn main() -> Result<(), Error> {
                         .and_then(|count| count.as_u64())
                         .ok_or(err_msg("images but no images_count"))?;
 
-                    if images_count <= u64(images.len()) {
+                    if images_count <= u64::try_from(images.len()).expect("usize u64") {
                         // we already have them all!
                         images.to_owned()
                     } else {
