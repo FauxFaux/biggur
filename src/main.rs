@@ -23,7 +23,7 @@ type Instant = chrono::DateTime<chrono::Utc>;
 
 struct Cache {
     db: rusqlite::Connection,
-    client: reqwest::Client,
+    client: reqwest::blocking::Client,
     client_id: String,
 }
 
@@ -32,7 +32,7 @@ fn main() -> Result<(), Error> {
 
     let cache = Cache {
         db: rusqlite::Connection::open("biggur.db")?,
-        client: reqwest::ClientBuilder::new()
+        client: reqwest::blocking::ClientBuilder::new()
             .timeout(Duration::from_secs(15))
             .build()?,
         client_id: env::var("IMGUR_CLIENT_ID")
